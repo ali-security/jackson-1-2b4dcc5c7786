@@ -1,0 +1,84 @@
+# Seal build: upstream jackson-1 has no GitHub Actions CI, so this workflow
+# reproduces the project's own Ant build (build.xml / ant/build-test.xml).
+# The released 1.9.13 jar was compiled with JDK 1.7 (MANIFEST Created-By
+# 1.7.0_10-ea) targeting 1.5 bytecode; the test suite runs on JDK 6 because the
+# 2013-era serializer tests predate JDK 7's Throwable.suppressed field.
+name: seal-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Space-separated fully-qualified test classes to run instead of the full suite"
+        required: false
+        default: ""
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # setup-java cannot resolve Java 6/7 any more, so fetch Zulu builds from Azul's CDN.
+      - name: Set up JDK 6 (test runtime)
+        id: jdk6
+        run: |
+          curl -fsSL -o /tmp/jdk6.tar.gz https://cdn.azul.com/zulu/bin/zulu6.22.0.3-jdk6.0.119-linux_x64.tar.gz
+          sudo tar -xzf /tmp/jdk6.tar.gz -C /opt
+          echo "path=/opt/zulu6.22.0.3-jdk6.0.119-linux_x64" >> "$GITHUB_OUTPUT"
+
+      - name: Set up JDK 7 (compile toolchain)
+        id: jdk7
+        run: |
+          curl -fsSL -o /tmp/jdk7.tar.gz https://cdn.azul.com/zulu/bin/zulu7.56.0.11-ca-jdk7.0.352-linux_x64.tar.gz
+          sudo tar -xzf /tmp/jdk7.tar.gz -C /opt
+          echo "path=/opt/zulu7.56.0.11-ca-jdk7.0.352-linux_x64" >> "$GITHUB_OUTPUT"
+
+      - name: Install Apache Ant 1.8.4
+        run: |
+          curl -fsSL -o /tmp/ant.tar.gz https://archive.apache.org/dist/ant/binaries/apache-ant-1.8.4-bin.tar.gz
+          sudo tar -xzf /tmp/ant.tar.gz -C /opt
+          echo "ANT_HOME=/opt/apache-ant-1.8.4" >> "$GITHUB_ENV"
+          echo "/opt/apache-ant-1.8.4/bin" >> "$GITHUB_PATH"
+
+      - name: Build jars (JDK 7)
+        env:
+          JAVA_HOME: ${{ steps.jdk7.outputs.path }}
+        run: |
+          "$JAVA_HOME/bin/java" -version
+          ant -version
+          ant jars.asl
+
+      - name: Test (JDK 6)
+        env:
+          JAVA_HOME: ${{ steps.jdk6.outputs.path }}
+          TEST_FILTER: ${{ inputs.test-filter }}
+        run: |
+          "$JAVA_HOME/bin/java" -version
+          if [ -n "$TEST_FILTER" ]; then
+            for t in $TEST_FILTER; do
+              ant test.single -Dtest="$t"
+            done
+          else
+            ant test
+            python3 - <<'EOF'
+          import glob, xml.etree.ElementTree as ET
+          tot = {"tests": 0, "failures": 0, "errors": 0}
+          files = sorted(glob.glob("test/results/xml/TEST-*.xml"))
+          for f in files:
+              r = ET.parse(f).getroot()
+              for k in tot:
+                  tot[k] += int(r.get(k, 0))
+          print("TOTAL test classes=%d tests=%d failures=%d errors=%d passed=%d"
+                % (len(files), tot["tests"], tot["failures"], tot["errors"],
+                   tot["tests"] - tot["failures"] - tot["errors"]))
+          EOF
+          fi
+
+      - name: Upload jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: jackson-mapper-asl
+          path: build/jackson-mapper-asl-*.jar
+          if-no-files-found: error
