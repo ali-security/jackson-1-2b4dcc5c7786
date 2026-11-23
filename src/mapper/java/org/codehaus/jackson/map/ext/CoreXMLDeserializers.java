@@ -11,6 +11,7 @@ import javax.xml.namespace.QName;
 
 import org.codehaus.jackson.JsonParser;
 import org.codehaus.jackson.JsonProcessingException;
+import org.codehaus.jackson.JsonToken;
 import org.codehaus.jackson.map.DeserializationContext;
 import org.codehaus.jackson.map.deser.std.StdDeserializer;
 import org.codehaus.jackson.map.deser.std.FromStringDeserializer;
@@ -40,7 +41,29 @@ public class CoreXMLDeserializers
             throw new RuntimeException(e);
         }
     }
-    
+
+    /**
+     * Maximum length of a textual {@link Duration} or {@link XMLGregorianCalendar}
+     * value accepted for deserialization. {@link DatatypeFactory} parses numeric
+     * components of these values with the O(n^2) {@code BigInteger(String)} and
+     * {@code BigDecimal(String)} constructors, so overly long values must be
+     * rejected before they can reach it.
+     *<p>
+     * [databind#6127]: there are no stream read constraints to bound this with,
+     * so a fixed limit is used instead.
+     */
+    protected final static int MAX_VALUE_LENGTH = 2000;
+
+    /**
+     * Helper method for constructing the description of a textual value that
+     * exceeds {@link #MAX_VALUE_LENGTH}.
+     */
+    protected static String _valueTooLongMessage(String value)
+    {
+        return String.format("value length (%d) exceeds the maximum allowed (%d)",
+                value.length(), MAX_VALUE_LENGTH);
+    }
+
     /*
     /**********************************************************
     /* Provider implementation
@@ -76,6 +99,11 @@ public class CoreXMLDeserializers
         protected Duration _deserialize(String value, DeserializationContext ctxt)
             throws IllegalArgumentException
         {
+            // [databind#6127] Length of the whole value is checked as a conservative
+            // upper bound: it is never shorter than any single numeric component.
+            if (value.length() > MAX_VALUE_LENGTH) {
+                throw new IllegalArgumentException(_valueTooLongMessage(value));
+            }
             return _dataTypeFactory.newDuration(value);
         }
     }
@@ -89,6 +117,14 @@ public class CoreXMLDeserializers
         public XMLGregorianCalendar deserialize(JsonParser jp, DeserializationContext ctxt)
             throws IOException, JsonProcessingException
         {
+            // [databind#6127] Similar to DurationDeserializer: length of a textual
+            // value is checked before it is parsed any further
+            if (jp.getCurrentToken() == JsonToken.VALUE_STRING) {
+                String text = jp.getText().trim();
+                if (text.length() > MAX_VALUE_LENGTH) {
+                    throw ctxt.weirdStringException(_valueClass, _valueTooLongMessage(text));
+                }
+            }
             Date d = _parseDate(jp, ctxt);
             if (d == null) {
                 return null;
