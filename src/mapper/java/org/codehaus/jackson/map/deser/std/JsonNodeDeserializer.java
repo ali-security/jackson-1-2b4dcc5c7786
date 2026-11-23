@@ -125,6 +125,12 @@ public class JsonNodeDeserializer
 abstract class BaseNodeDeserializer<N extends JsonNode>
     extends StdDeserializer<N>
 {
+    /**
+     * Maximum nesting depth of JSON Arrays and Objects that will be
+     * bound; deeper content is rejected to avoid unbounded recursion.
+     */
+    private final static int MAX_DEPTH = 1000;
+
     public BaseNodeDeserializer(Class<N> nodeClass)
     {
         super(nodeClass);
@@ -184,6 +190,14 @@ abstract class BaseNodeDeserializer<N extends JsonNode>
             final JsonNodeFactory nodeFactory)            
         throws IOException, JsonProcessingException
     {
+        return deserializeObject(jp, ctxt, nodeFactory, 0);
+    }
+
+    protected final ObjectNode deserializeObject(JsonParser jp, DeserializationContext ctxt,
+            final JsonNodeFactory nodeFactory, int depth)
+        throws IOException, JsonProcessingException
+    {
+        _verifyDepth(jp, depth);
         ObjectNode node = nodeFactory.objectNode();
         JsonToken t = jp.getCurrentToken();
         if (t == JsonToken.START_OBJECT) {
@@ -194,16 +208,16 @@ abstract class BaseNodeDeserializer<N extends JsonNode>
             JsonNode value;
             switch (jp.nextToken()) {
             case START_OBJECT:
-                value = deserializeObject(jp, ctxt, nodeFactory);
+                value = deserializeObject(jp, ctxt, nodeFactory, depth + 1);
                 break;
             case START_ARRAY:
-                value = deserializeArray(jp, ctxt, nodeFactory);
+                value = deserializeArray(jp, ctxt, nodeFactory, depth + 1);
                 break;
             case VALUE_STRING:
                 value = nodeFactory.textNode(jp.getText());
                 break;
             default:
-                value = deserializeAny(jp, ctxt, nodeFactory);
+                value = deserializeAny(jp, ctxt, nodeFactory, depth + 1);
             }
             JsonNode old = node.put(fieldName, value);
             if (old != null) {
@@ -217,14 +231,22 @@ abstract class BaseNodeDeserializer<N extends JsonNode>
             final JsonNodeFactory nodeFactory)            
         throws IOException, JsonProcessingException
     {
+        return deserializeArray(jp, ctxt, nodeFactory, 0);
+    }
+
+    protected final ArrayNode deserializeArray(JsonParser jp, DeserializationContext ctxt,
+            final JsonNodeFactory nodeFactory, int depth)
+        throws IOException, JsonProcessingException
+    {
+        _verifyDepth(jp, depth);
         ArrayNode node = nodeFactory.arrayNode();
         while (true) {
             switch (jp.nextToken()) {
             case START_OBJECT:
-                node.add(deserializeObject(jp, ctxt, nodeFactory));
+                node.add(deserializeObject(jp, ctxt, nodeFactory, depth + 1));
                 break;
             case START_ARRAY:
-                node.add(deserializeArray(jp, ctxt, nodeFactory));
+                node.add(deserializeArray(jp, ctxt, nodeFactory, depth + 1));
                 break;
             case END_ARRAY:
                 return node;
@@ -232,7 +254,7 @@ abstract class BaseNodeDeserializer<N extends JsonNode>
                 node.add(nodeFactory.textNode(jp.getText()));
                 break;
             default:
-                node.add(deserializeAny(jp, ctxt, nodeFactory));
+                node.add(deserializeAny(jp, ctxt, nodeFactory, depth + 1));
                 break;
             }
         }
@@ -242,15 +264,22 @@ abstract class BaseNodeDeserializer<N extends JsonNode>
             final JsonNodeFactory nodeFactory)            
         throws IOException, JsonProcessingException
     {
+        return deserializeAny(jp, ctxt, nodeFactory, 0);
+    }
+
+    protected final JsonNode deserializeAny(JsonParser jp, DeserializationContext ctxt,
+            final JsonNodeFactory nodeFactory, int depth)
+        throws IOException, JsonProcessingException
+    {
         switch (jp.getCurrentToken()) {
         case START_OBJECT:
-            return deserializeObject(jp, ctxt, nodeFactory);
+            return deserializeObject(jp, ctxt, nodeFactory, depth);
 
         case START_ARRAY:
-            return deserializeArray(jp, ctxt, nodeFactory);
+            return deserializeArray(jp, ctxt, nodeFactory, depth);
 
         case FIELD_NAME:
-            return deserializeObject(jp, ctxt, nodeFactory);
+            return deserializeObject(jp, ctxt, nodeFactory, depth);
 
         case VALUE_EMBEDDED_OBJECT:
             // [JACKSON-796]
@@ -309,6 +338,18 @@ abstract class BaseNodeDeserializer<N extends JsonNode>
         //case END_ARRAY:
         default:
             throw ctxt.mappingException(getValueClass());
+        }
+    }
+
+    /**
+     * Helper method called before binding a JSON Array or Object, to fail
+     * on content that is nested too deeply to be handled safely.
+     */
+    private void _verifyDepth(JsonParser jp, int depth)
+        throws JsonParseException
+    {
+        if (depth > MAX_DEPTH) {
+            throw new JsonParseException("JSON is too deeply nested.", jp.getCurrentLocation());
         }
     }
 }
